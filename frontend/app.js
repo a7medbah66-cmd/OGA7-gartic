@@ -19,6 +19,10 @@ async function login(){
     document.getElementById("auth").style.display="none";
     if(isAdmin) document.getElementById("admin_panel").style.display="block";
     else document.getElementById("game").style.display="block";
+    // auto join room
+    const rres=await fetch(`${API_BASE}/join_room?token=${token}`,{method:"POST"});
+    const rdata=await rres.json();
+    if(rdata.status=="ok") joinRoom(rdata.room_id);
   } else alert(data.message);
 }
 
@@ -30,15 +34,13 @@ async function createRoom(){
   const data=await res.json();
   if(data.status=="ok"){
     document.getElementById("admin_status").innerText="Room Created: "+data.room_id;
-    roomId=data.room_id;
-    joinRoom(roomId);
+    joinRoom(data.room_id);
   }
 }
 
 // ---------------- ROOM ----------------
 async function joinRoom(rid){
   roomId=rid;
-  await fetch(`${API_BASE}/join_room?token=${token}&room_id=${roomId}`,{method:"POST"});
   connectWS();
   document.getElementById("game").style.display="block";
   document.getElementById("room_id").innerText=roomId;
@@ -47,11 +49,16 @@ async function joinRoom(rid){
 // ---------------- WEBSOCKET ----------------
 function connectWS(){
   ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+`/ws/${roomId}/${token}`);
-  ws.onmessage=(e)=>{ const data=JSON.parse(e.data);
+  ws.onmessage=(e)=>{
+    const data=JSON.parse(e.data);
     if(data.type=="draw") draw(data.x,data.y);
-    if(data.type=="new_round"){ document.getElementById("drawer").innerText=data.drawer; ctx.clearRect(0,0,canvas.width,canvas.height);}
+    if(data.type=="new_round"){ 
+        document.getElementById("drawer").innerText=data.drawer; 
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+    }
     if(data.type=="timer") document.getElementById("timer").innerText=data.time;
     if(data.type=="guess_correct"){ appendChat(data.user+" guessed correctly!"); }
+    if(data.type=="chat"){ appendChat(data.user+": "+data.message); }
     if(data.type=="game_over"){ appendChat("Game over! Scores: "+JSON.stringify(data.scores)); }
   }
 }

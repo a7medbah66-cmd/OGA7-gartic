@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,45 +19,45 @@ app.add_middleware(
 # -------------------------
 # In-memory storage
 # -------------------------
-users = {"admino": "a7med@1289"}  # admin
+users = {"admino": "a7med@1289"}  # admin user
 sessions = {}  # token -> username
 
-rooms = {}  # room_id -> {players, spectators, round, word, connections, scores, timer}
-queue = []  # waiting list
+rooms = {}  # room_id -> room_data
 
 # -------------------------
 # Models
 # -------------------------
 class User(BaseModel):
     username: str
-    password: str
+    password: str = None
 
 # -------------------------
 # Auth endpoints
 # -------------------------
-@app.post("/register")
-async def register(user: User):
-    if user.username in users:
-        return {"status": "error", "message": "User exists"}
-    users[user.username] = user.password
-    return {"status": "ok"}
-
 @app.post("/login")
 async def login(user: User):
-    if users.get(user.username) != user.password:
-        return {"status": "error", "message": "Invalid credentials"}
+    if user.username == "admino":
+        # Admin requires password
+        if users.get("admino") != user.password:
+            return {"status": "error", "message": "Invalid credentials"}
+        token = str(uuid.uuid4())
+        sessions[token] = user.username
+        return {"status": "ok", "token": token, "username": user.username, "is_admin": True}
+
+    # Normal user: no password needed
     token = str(uuid.uuid4())
     sessions[token] = user.username
-    return {"status": "ok", "token": token, "username": user.username, "is_admin": user.username=="admino"}
+    return {"status": "ok", "token": token, "username": user.username, "is_admin": False}
 
 # -------------------------
-# Admin settings endpoints
+# Admin endpoints
 # -------------------------
 @app.post("/create_room")
 async def create_room(token: str, rounds: int = 3, time_limit: int = 20):
     username = sessions.get(token)
     if username != "admino":
         return {"status": "error", "message": "Unauthorized"}
+
     room_id = str(uuid.uuid4())
     rooms[room_id] = {
         "players": [],
@@ -73,37 +73,31 @@ async def create_room(token: str, rounds: int = 3, time_limit: int = 20):
     return {"status":"ok", "room_id": room_id}
 
 # -------------------------
-# Join queue / room
+# Join room (auto-join for users)
 # -------------------------
 @app.post("/join_room")
-async def join_room(token: str, room_id: str):
+async def join_room(token: str):
     username = sessions.get(token)
-    if not username or room_id not in rooms:
+    if not username:
         return {"status": "error"}
+
+    # Auto-join the first room available
+    if not rooms:
+        return {"status":"error", "message":"No room created yet"}
+    room_id = list(rooms.keys())[0]
     room = rooms[room_id]
+
     if username not in room["players"]:
         room["players"].append(username)
         room["scores"][username] = 0
+
     return {"status":"ok", "room_id": room_id}
-
-@app.post("/join_spectator")
-async def join_spectator(token: str, room_id: str):
-    username = sessions.get(token)
-    if not username or room_id not in rooms:
-        return {"status": "error"}
-    room = rooms[room_id]
-    if username not in room["spectators"]:
-        room["spectators"].append(username)
-    return {"status":"ok"}
-
-# -------------------------
-# Word guessing system
-# -------------------------
-WORDS = ["apple", "banana", "cat", "dog", "house", "tree", "car", "star", "sun", "moon"]
 
 # -------------------------
 # WebSocket for real-time
 # -------------------------
+WORDS = ["apple", "banana", "cat", "dog", "house", "tree", "car", "star", "sun", "moon"]
+
 @app.websocket("/ws/{room_id}/{token}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str):
     username = sessions.get(token)
@@ -118,25 +112,32 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str):
     try:
         while True:
             data = await websocket.receive_json()
+
             # Handle drawing
             if data.get("type") == "draw":
                 for c in room["connections"]:
                     if c["ws"] != websocket:
                         await c["ws"].send_json({"type":"draw","x":data["x"],"y":data["y"]})
+
             # Handle guesses
             if data.get("type") == "guess":
                 guess = data.get("guess")
                 if guess == room["word"] and username != room.get("drawing_player"):
                     room["scores"][username] += 100
-                    # Notify everyone
                     for c in room["connections"]:
                         await c["ws"].send_json({
                             "type":"guess_correct",
                             "user": username
                         })
+                else:
+                    # Broadcast normal chat
+                    for c in room["connections"]:
+                        await c["ws"].send_json({"type":"chat","user":username,"message":guess})
+
             # Admin can start next round
             if data.get("type")=="next_round" and username=="admino":
                 await start_next_round(room_id)
+
     except WebSocketDisconnect:
         room["connections"] = [c for c in room["connections"] if c["ws"]!=websocket]
 
@@ -154,7 +155,6 @@ async def start_next_round(room_id):
     # pick drawer
     room["drawing_player"] = random.choice(room["players"])
     room["word"] = random.choice(WORDS)
-    # notify all
     for c in room["connections"]:
         await c["ws"].send_json({
             "type":"new_round",
@@ -163,7 +163,7 @@ async def start_next_round(room_id):
             "drawer": room["drawing_player"],
             "time_limit": room["time_limit"]
         })
-    # start countdown timer
+    # start countdown
     asyncio.create_task(round_timer(room_id, room["time_limit"]))
 
 async def round_timer(room_id, time_left):
@@ -172,7 +172,6 @@ async def round_timer(room_id, time_left):
         for c in room["connections"]:
             await c["ws"].send_json({"type":"timer","time":t})
         await asyncio.sleep(1)
-    # Round over → start next
     await start_next_round(room_id)
 
 # -------------------------
