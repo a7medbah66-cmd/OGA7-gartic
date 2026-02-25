@@ -24,7 +24,7 @@ app.add_middleware(
 # =====================
 # SERVE FRONTEND
 # =====================
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
 # =====================
 # REQUEST MODELS
