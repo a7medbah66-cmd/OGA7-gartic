@@ -1,45 +1,117 @@
+// 🔹 Use dynamic live URL
+const API_BASE = window.location.origin; // Works both locally & deployed
+
+let token = "";
+let ws;
+let roomId;
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 let drawing = false;
 
-canvas.onmousedown = () => drawing = true;
-canvas.onmouseup = () => drawing = false;
+// =====================
+// 🔐 AUTH
+// =====================
+async function register() {
+  const username = document.getElementById("username").value;
+  const password = document.getElementById("password").value;
 
-canvas.onmousemove = (e) => {
-    if (!drawing) return;
+  const res = await fetch(`${API_BASE}/register`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, password})
+  });
 
-    let x = e.offsetX;
-    let y = e.offsetY;
+  const data = await res.json();
+  alert(data.status === "ok" ? "Registered!" : data.message);
+}
 
-    ctx.fillRect(x, y, 4, 4);
+async function login() {
+  const username = document.getElementById("username").value;
+  const password = document.getElementById("password").value;
 
-    socket.send(JSON.stringify({
-        type: "draw",
-        x, y,
-        color: "black"
-    }));
-};
+  const res = await fetch(`${API_BASE}/login`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, password})
+  });
 
-const socket = new WebSocket("ws://localhost:8000/ws/ROOM/USERNAME");
+  const data = await res.json();
 
-socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
+  if (data.status === "ok") {
+    token = data.token;
+    document.getElementById("auth").style.display = "none";
+    document.getElementById("game").style.display = "block";
+  } else {
+    alert(data.message);
+  }
+}
 
-    if (data.type === "draw") {
-        ctx.fillRect(data.x, data.y, 4, 4);
-    }
+// =====================
+// 🎮 MATCHMAKING
+// =====================
+async function joinQueue() {
+  const res = await fetch(`${API_BASE}/join_queue?token=${token}`, {
+    method: "POST"
+  });
 
-    if (data.type === "timer") {
-        document.getElementById("timer").innerText = data.time;
-    }
-};
+  const data = await res.json();
 
-function sendGuess() {
-    let val = document.getElementById("guess").value;
+  if (data.status === "matched") {
+    roomId = data.room;
+    connectWS();
+    document.getElementById("status").innerText = "Matched! Start drawing!";
+  } else {
+    document.getElementById("status").innerText = "Waiting for player...";
+  }
+}
 
-    socket.send(JSON.stringify({
-        type: "guess",
-        guess: val
-    }));
+// =====================
+// 🔌 WEBSOCKET
+// =====================
+function connectWS() {
+  ws = new WebSocket(
+    (location.protocol === "https:" ? "wss://" : "ws://") +
+    location.host +
+    `/ws/${roomId}`
+  );
+
+  ws.onmessage = (event) => {
+    const {x, y} = JSON.parse(event.data);
+    draw(x, y);
+  };
+}
+
+// =====================
+// 🎨 DRAWING
+// =====================
+canvas.addEventListener("mousedown", () => drawing = true);
+canvas.addEventListener("mouseup", () => drawing = false);
+
+canvas.addEventListener("mousemove", (e) => {
+  if (!drawing || !ws) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  draw(x, y);
+  ws.send(JSON.stringify({x, y}));
+});
+
+// Touch support
+canvas.addEventListener("touchmove", (e) => {
+  if (!ws) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.touches[0].clientX - rect.left;
+  const y = e.touches[0].clientY - rect.top;
+
+  draw(x, y);
+  ws.send(JSON.stringify({x, y}));
+});
+
+function draw(x, y) {
+  ctx.fillRect(x, y, 4, 4);
 }
