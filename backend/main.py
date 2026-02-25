@@ -4,8 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import json
 
-from game_manager import GameManager
-from auth import register_user, login_user
+from backend.game_manager import GameManager
+from backend.auth import register_user, login_user
 
 app = FastAPI()
 game = GameManager()
