@@ -1,18 +1,14 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import json
-
-from backend.game_manager import GameManager
-from backend.auth import register_user, login_user
+import uuid
+import os
 
 app = FastAPI()
-game = GameManager()
 
-# =====================
-# CORS (IMPORTANT)
-# =====================
+# CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,50 +18,84 @@ app.add_middleware(
 )
 
 # =====================
-# SERVE FRONTEND
+# 🗄️ In-memory storage
 # =====================
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+users = {
+    "admino": "a7med@1289"  # pre-loaded admin
+}
+sessions = {}
+queue = []
+rooms = {}
 
 # =====================
-# REQUEST MODELS
+# 📦 Models
 # =====================
-class AuthData(BaseModel):
+class User(BaseModel):
     username: str
     password: str
 
-class QueueData(BaseModel):
-    username: str
-
 # =====================
-# AUTH ROUTES
+# 🔐 AUTH
 # =====================
 @app.post("/register")
-async def register(data: AuthData):
-    return register_user(data.username, data.password)
+async def register(user: User):
+    if user.username in users:
+        return {"status": "error", "message": "User exists"}
+    users[user.username] = user.password
+    return {"status": "ok"}
 
 @app.post("/login")
-async def login(data: AuthData):
-    return login_user(data.username, data.password)
+async def login(user: User):
+    if users.get(user.username) != user.password:
+        return {"status": "error", "message": "Invalid credentials"}
+    token = str(uuid.uuid4())
+    sessions[token] = user.username
+    return {"status": "ok", "token": token}
 
 # =====================
-# MATCHMAKING
+# 🎮 MATCHMAKING
 # =====================
 @app.post("/join_queue")
-async def join_queue(data: QueueData):
-    room_id = game.add_to_queue(data.username)
-    return {"room": room_id}
+async def join_queue(token: str):
+    username = sessions.get(token)
+    if not username:
+        return {"status": "error"}
+    if username not in queue:
+        queue.append(username)
+    if len(queue) >= 2:
+        p1 = queue.pop(0)
+        p2 = queue.pop(0)
+        room_id = str(uuid.uuid4())
+        rooms[room_id] = {
+            "players": [p1, p2],
+            "connections": []
+        }
+        return {"status": "matched", "room": room_id}
+    return {"status": "waiting"}
 
 # =====================
-# WEBSOCKET
+# 🔌 WEBSOCKET
 # =====================
-@app.websocket("/ws/{room_id}/{username}")
-async def websocket_endpoint(ws: WebSocket, room_id: str, username: str):
-    await game.connect(ws, room_id, username)
-
+@app.websocket("/ws/{room_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str):
+    await websocket.accept()
+    if room_id not in rooms:
+        await websocket.close()
+        return
+    rooms[room_id]["connections"].append(websocket)
     try:
         while True:
-            data = await ws.receive_text()
-            await game.handle_event(room_id, username, json.loads(data))
-
+            data = await websocket.receive_text()
+            for connection in rooms[room_id]["connections"]:
+                if connection != websocket:
+                    await connection.send_text(data)
     except WebSocketDisconnect:
-        await game.disconnect(room_id, username)
+        rooms[room_id]["connections"].remove(websocket)
+
+# =====================
+# 🌐 STATIC FILES
+# =====================
+if not os.path.exists("frontend"):
+    os.makedirs("frontend")  # create folder if missing
+
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
