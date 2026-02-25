@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drawing Game</title>
+<link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<h1>🎨 Multiplayer Drawing Game</h1>
+
+<div class="card">
+    <h2>Login / Register</h2>
+    <input id="username" placeholder="Username">
+    <input id="password" type="password" placeholder="Password">
+
+    <button onclick="register()">Register</button>
+    <button onclick="login()">Login</button>
+
+    <p id="authStatus"></p>
+</div>
+
+<div class="card">
+    <h2>Matchmaking</h2>
+    <button onclick="joinQueue()">Join Game</button>
+    <p id="queueStatus"></p>
+</div>
+
+<script>
+let token = "";
+let username = "";
+
+async function register() {
+    username = document.getElementById("username").value;
+    let password = document.getElementById("password").value;
+
+    let res = await fetch("http://localhost:8000/register", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username, password})
+    });
+
+    let data = await res.json();
+    document.getElementById("authStatus").innerText = data.status;
+}
+
+async function login() {
+    username = document.getElementById("username").value;
+    let password = document.getElementById("password").value;
+
+    let res = await fetch("http://localhost:8000/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username, password})
+    });
+
+    let data = await res.json();
+
+    if (data.status === "ok") {
+        token = data.token;
+        localStorage.setItem("token", token);
+        localStorage.setItem("username", username);
+        document.getElementById("authStatus").innerText = "Logged in!";
+    } else {
+        document.getElementById("authStatus").innerText = "Login failed";
+    }
+}
+
+async function joinQueue() {
+    let res = await fetch("http://localhost:8000/join_queue", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            username: localStorage.getItem("username")
+        })
+    });
+
+    let data = await res.json();
+
+    if (data.room === "waiting") {
+        document.getElementById("queueStatus").innerText = "Waiting for players...";
+    } else {
+        window.location.href = `game.html?room=${data.room}`;
+    }
+}
+</script>
+
+</body>
+</html>
