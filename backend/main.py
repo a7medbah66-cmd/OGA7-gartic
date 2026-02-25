@@ -3,12 +3,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uuid
-import os
+import uuid, asyncio, random, os
 
 app = FastAPI()
 
-# CORS for frontend
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,26 +16,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================
-# 🗄️ In-memory storage
-# =====================
-users = {
-    "admino": "a7med@1289"  # pre-loaded admin
-}
-sessions = {}
-queue = []
-rooms = {}
+# -------------------------
+# In-memory storage
+# -------------------------
+users = {"admino": "a7med@1289"}  # admin
+sessions = {}  # token -> username
 
-# =====================
-# 📦 Models
-# =====================
+rooms = {}  # room_id -> {players, spectators, round, word, connections, scores, timer}
+queue = []  # waiting list
+
+# -------------------------
+# Models
+# -------------------------
 class User(BaseModel):
     username: str
     password: str
 
-# =====================
-# 🔐 AUTH
-# =====================
+# -------------------------
+# Auth endpoints
+# -------------------------
 @app.post("/register")
 async def register(user: User):
     if user.username in users:
@@ -50,52 +48,136 @@ async def login(user: User):
         return {"status": "error", "message": "Invalid credentials"}
     token = str(uuid.uuid4())
     sessions[token] = user.username
-    return {"status": "ok", "token": token}
+    return {"status": "ok", "token": token, "username": user.username, "is_admin": user.username=="admino"}
 
-# =====================
-# 🎮 MATCHMAKING
-# =====================
-@app.post("/join_queue")
-async def join_queue(token: str):
+# -------------------------
+# Admin settings endpoints
+# -------------------------
+@app.post("/create_room")
+async def create_room(token: str, rounds: int = 3, time_limit: int = 20):
     username = sessions.get(token)
-    if not username:
-        return {"status": "error"}
-    if username not in queue:
-        queue.append(username)
-    if len(queue) >= 2:
-        p1 = queue.pop(0)
-        p2 = queue.pop(0)
-        room_id = str(uuid.uuid4())
-        rooms[room_id] = {
-            "players": [p1, p2],
-            "connections": []
-        }
-        return {"status": "matched", "room": room_id}
-    return {"status": "waiting"}
+    if username != "admino":
+        return {"status": "error", "message": "Unauthorized"}
+    room_id = str(uuid.uuid4())
+    rooms[room_id] = {
+        "players": [],
+        "spectators": [],
+        "round": 0,
+        "word": "",
+        "connections": [],
+        "scores": {},
+        "time_limit": time_limit,
+        "rounds_total": rounds,
+        "drawing_player": None
+    }
+    return {"status":"ok", "room_id": room_id}
 
-# =====================
-# 🔌 WEBSOCKET
-# =====================
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await websocket.accept()
-    if room_id not in rooms:
+# -------------------------
+# Join queue / room
+# -------------------------
+@app.post("/join_room")
+async def join_room(token: str, room_id: str):
+    username = sessions.get(token)
+    if not username or room_id not in rooms:
+        return {"status": "error"}
+    room = rooms[room_id]
+    if username not in room["players"]:
+        room["players"].append(username)
+        room["scores"][username] = 0
+    return {"status":"ok", "room_id": room_id}
+
+@app.post("/join_spectator")
+async def join_spectator(token: str, room_id: str):
+    username = sessions.get(token)
+    if not username or room_id not in rooms:
+        return {"status": "error"}
+    room = rooms[room_id]
+    if username not in room["spectators"]:
+        room["spectators"].append(username)
+    return {"status":"ok"}
+
+# -------------------------
+# Word guessing system
+# -------------------------
+WORDS = ["apple", "banana", "cat", "dog", "house", "tree", "car", "star", "sun", "moon"]
+
+# -------------------------
+# WebSocket for real-time
+# -------------------------
+@app.websocket("/ws/{room_id}/{token}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str):
+    username = sessions.get(token)
+    if not username or room_id not in rooms:
         await websocket.close()
         return
-    rooms[room_id]["connections"].append(websocket)
+
+    room = rooms[room_id]
+    await websocket.accept()
+    room["connections"].append({"ws": websocket, "user": username})
+
     try:
         while True:
-            data = await websocket.receive_text()
-            for connection in rooms[room_id]["connections"]:
-                if connection != websocket:
-                    await connection.send_text(data)
+            data = await websocket.receive_json()
+            # Handle drawing
+            if data.get("type") == "draw":
+                for c in room["connections"]:
+                    if c["ws"] != websocket:
+                        await c["ws"].send_json({"type":"draw","x":data["x"],"y":data["y"]})
+            # Handle guesses
+            if data.get("type") == "guess":
+                guess = data.get("guess")
+                if guess == room["word"] and username != room.get("drawing_player"):
+                    room["scores"][username] += 100
+                    # Notify everyone
+                    for c in room["connections"]:
+                        await c["ws"].send_json({
+                            "type":"guess_correct",
+                            "user": username
+                        })
+            # Admin can start next round
+            if data.get("type")=="next_round" and username=="admino":
+                await start_next_round(room_id)
     except WebSocketDisconnect:
-        rooms[room_id]["connections"].remove(websocket)
+        room["connections"] = [c for c in room["connections"] if c["ws"]!=websocket]
 
-# =====================
-# 🌐 STATIC FILES
-# =====================
+# -------------------------
+# Round handling
+# -------------------------
+async def start_next_round(room_id):
+    room = rooms[room_id]
+    room["round"] += 1
+    if room["round"] > room["rounds_total"]:
+        # Game finished
+        for c in room["connections"]:
+            await c["ws"].send_json({"type":"game_over","scores":room["scores"]})
+        return
+    # pick drawer
+    room["drawing_player"] = random.choice(room["players"])
+    room["word"] = random.choice(WORDS)
+    # notify all
+    for c in room["connections"]:
+        await c["ws"].send_json({
+            "type":"new_round",
+            "round": room["round"],
+            "total_rounds": room["rounds_total"],
+            "drawer": room["drawing_player"],
+            "time_limit": room["time_limit"]
+        })
+    # start countdown timer
+    asyncio.create_task(round_timer(room_id, room["time_limit"]))
+
+async def round_timer(room_id, time_left):
+    room = rooms[room_id]
+    for t in range(time_left,0,-1):
+        for c in room["connections"]:
+            await c["ws"].send_json({"type":"timer","time":t})
+        await asyncio.sleep(1)
+    # Round over → start next
+    await start_next_round(room_id)
+
+# -------------------------
+# Serve frontend
+# -------------------------
 if not os.path.exists("frontend"):
-    os.makedirs("frontend")  # create folder if missing
-
+    os.makedirs("frontend")
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

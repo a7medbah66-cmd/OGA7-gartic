@@ -1,25 +1,35 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Multiplayer Drawing Game</title>
+  <title>Gartic Phone Style Game</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<h1>🎨 Drawing Game</h1>
+<h1>🎨 Multiplayer Drawing Game</h1>
 
 <div id="auth">
   <input id="username" placeholder="Username">
   <input id="password" type="password" placeholder="Password">
-  <button onclick="register()">Register</button>
   <button onclick="login()">Login</button>
 </div>
 
-<div id="game" style="display:none;">
-  <button onclick="joinQueue()">Join Match</button>
-  <p id="status"></p>
+<div id="admin_panel" style="display:none;">
+  <h2>Admin Panel</h2>
+  <button onclick="createRoom()">Create Room</button>
+  <input id="rounds" type="number" placeholder="Rounds" value="3">
+  <input id="time_limit" type="number" placeholder="Time Limit" value="20">
+  <p id="admin_status"></p>
+</div>
 
+<div id="game" style="display:none;">
+  <p>Room: <span id="room_id"></span></p>
+  <p>Drawer: <span id="drawer"></span></p>
+  <p>Time left: <span id="timer"></span></p>
   <canvas id="canvas" width="400" height="400"></canvas>
+  <input id="guess" placeholder="Type your guess">
+  <button onclick="sendGuess()">Guess</button>
+  <div id="chat"></div>
 </div>
 
 <script src="app.js"></script>
